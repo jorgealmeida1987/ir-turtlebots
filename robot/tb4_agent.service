@@ -1,0 +1,15 @@
+[Unit]
+Description=TurtleBot4 relay agent (tb4_agent)
+After=network-online.target turtlebot4.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+EnvironmentFile=/etc/tb4_agent.env
+ExecStart=/bin/bash -c 'source /etc/turtlebot4/setup.bash && exec python3 /opt/tb4_agent/tb4_agent.py'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

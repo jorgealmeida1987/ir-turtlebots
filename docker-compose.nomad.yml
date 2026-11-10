@@ -1,0 +1,30 @@
+# Usar SEMPRE com o nome de projeto:
+#   docker compose -p tbrelay -f docker-compose.nomad.yml --env-file .env.nomad up -d
+# A imagem tbrelay:latest é construída localmente e enviada com docker save/load (ver README).
+services:
+  relay:
+    image: tbrelay:latest
+    container_name: tbrelay-relay
+    restart: unless-stopped
+    env_file: .env.nomad
+    environment:
+      EVENT_LOG: /data/events.jsonl
+      PORT: "8080"
+      TRUST_PROXY: "1"
+    ports:
+      - "127.0.0.1:${RELAY_HOST_PORT:-10120}:8080"   # só localhost; o nginx do host faz o HTTPS
+    volumes:
+      - tbrelay-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tbrelay-data:

@@ -1,0 +1,50 @@
+# vhost nginx do relay TurtleBot — aplicado pelo Jorge (precisa de sudo).
+# Domínio: tb.lexicode-consulting.pt (A -> 213.63.232.58). Trocar 10120 se RELAY_HOST_PORT mudar.
+#
+#   sudo cp tbrelay /etc/nginx/sites-available/tbrelay
+#   sudo ln -s /etc/nginx/sites-available/tbrelay /etc/nginx/sites-enabled/tbrelay
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d tb.lexicode-consulting.pt
+#
+# O certbot acrescenta o bloco 443 e o redirecionamento 80 -> 443.
+
+upstream tbrelay {
+    server 127.0.0.1:10120;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name tb.lexicode-consulting.pt;
+
+    client_max_body_size 64k;
+
+    # Robôs: WebSocket de longa duração
+    location = /agent {
+        proxy_pass http://tbrelay;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    # Alunos: API HTTP (long-poll até 2 s)
+    location /api/ {
+        proxy_pass http://tbrelay;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 15s;
+        proxy_buffering off;
+    }
+
+    location = /healthz {
+        proxy_pass http://tbrelay;
+    }
+}

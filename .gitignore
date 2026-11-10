@@ -1,0 +1,9 @@
+.env.nomad
+*.env
+!*.env.example
+.venv/
+__pycache__/
+*.pyc
+*.tar.gz
+events.jsonl
+.local/
