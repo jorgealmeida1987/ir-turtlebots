@@ -14,12 +14,16 @@ Configuração por variáveis de ambiente (ver tb4_agent.env.example).
 import array
 import asyncio
 import base64
+import fcntl
 import hashlib
 import json
 import math
 import os
+import pty
+import signal
 import ssl
 import struct
+import termios
 import threading
 import time
 from urllib.parse import urlsplit
@@ -48,6 +52,9 @@ MAX_MSG_BYTES = int(os.environ.get("MAX_MSG_BYTES", str(1024 * 1024)))
 # túnel de administração (SSH pelo relay): portos locais que o relay pode abrir; vazio = desligado
 TUNNEL_PORTS = {int(p) for p in os.environ.get("TUNNEL_PORTS", "22").split(",") if p.strip()}
 TUNNEL_ID_LEN = 8
+# consola web (shell num pseudo-terminal, aberta pelo relay a pedido da página de admin)
+CONSOLE = os.environ.get("CONSOLE", "1") == "1"
+CONSOLE_SHELL = os.environ.get("CONSOLE_SHELL", "/bin/bash")
 
 
 def log(*a):
@@ -321,9 +328,61 @@ class Link:
                 self.node.set_wanted(msg.get("topics", []))
                 log(f"relay pede: {msg.get('topics')}")
             elif kind == "tunnel_open":
-                self.tunnel_open(ws, str(msg.get("id")), int(msg.get("port", 0)))
+                if msg.get("kind") == "pty":
+                    self.console_open(ws, str(msg.get("id")), int(msg.get("cols", 80)), int(msg.get("rows", 24)))
+                else:
+                    self.tunnel_open(ws, str(msg.get("id")), int(msg.get("port", 0)))
+            elif kind == "tunnel_resize":
+                self.console_resize(str(msg.get("id")), int(msg.get("cols", 80)), int(msg.get("rows", 24)))
             elif kind == "tunnel_close":
                 self.tunnel_close(str(msg.get("id")))
+
+    # ---------------------------------------------------------------- consola (shell num PTY)
+    def console_open(self, ws: WebSocket, tid: str, cols: int, rows: int) -> None:
+        if not CONSOLE or len(tid) != TUNNEL_ID_LEN or tid in self.tunnels:
+            log(f"consola {tid} recusada")
+            asyncio.create_task(ws.send_text(json.dumps({"type": "tunnel_closed", "id": tid})))
+            return
+        home = os.path.expanduser("~")
+        env = {"HOME": home, "USER": os.environ.get("USER", "ubuntu"), "LOGNAME": os.environ.get("USER", "ubuntu"),
+               "SHELL": CONSOLE_SHELL, "TERM": "xterm-256color", "LANG": os.environ.get("LANG", "C.UTF-8"),
+               "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+        pid, fd = pty.fork()
+        if pid == 0:                                    # filho: só exec (o pai tem threads)
+            try:
+                os.chdir(home)
+                os.execve(CONSOLE_SHELL, [CONSOLE_SHELL, "-l"], env)
+            finally:
+                os._exit(127)
+        os.set_blocking(fd, False)
+        t = {"writer": None, "pending": [], "pty": fd, "pid": pid, "task": None}
+        self.tunnels[tid] = t
+        self.console_resize(tid, cols, rows)
+        loop = asyncio.get_running_loop()
+
+        def readable():
+            try:
+                data = os.read(fd, 65536)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                data = b""
+            if data:
+                asyncio.create_task(ws.send_binary(tid.encode() + data))
+            else:                                       # shell terminou
+                self.tunnel_close(tid)
+                asyncio.create_task(ws.send_text(json.dumps({"type": "tunnel_closed", "id": tid})))
+
+        loop.add_reader(fd, readable)
+        log(f"consola {tid} aberta (pid {pid}, {cols}x{rows})")
+
+    def console_resize(self, tid: str, cols: int, rows: int) -> None:
+        t = self.tunnels.get(tid)
+        if t and "pty" in t:
+            try:
+                fcntl.ioctl(t["pty"], termios.TIOCSWINSZ, struct.pack("HHHH", max(rows, 1), max(cols, 1), 0, 0))
+            except OSError:
+                pass
 
     # ---------------------------------------------------------------- túnel (SSH pelo relay)
     def tunnel_open(self, ws: WebSocket, tid: str, port: int) -> None:
@@ -365,6 +424,14 @@ class Link:
         t = self.tunnels.get(tid)
         if t is None:
             return
+        if "pty" in t:
+            try:
+                os.write(t["pty"], payload)
+            except BlockingIOError:
+                asyncio.get_running_loop().call_later(0.01, self.tunnel_data, tid, payload)
+            except OSError:
+                pass
+            return
         if t["writer"] is None:
             t["pending"].append(payload)
         else:
@@ -372,9 +439,27 @@ class Link:
 
     def tunnel_close(self, tid: str) -> None:
         t = self.tunnels.pop(tid, None)
-        if t is not None:
-            if t["writer"] is not None:
-                t["writer"].close()
+        if t is None:
+            return
+        if "pty" in t:
+            try:
+                asyncio.get_running_loop().remove_reader(t["pty"])
+            except Exception:
+                pass
+            try:
+                os.close(t["pty"])
+            except OSError:
+                pass
+            try:
+                os.killpg(t["pid"], signal.SIGHUP)       # a shell é líder de sessão (pty.fork)
+            except OSError:
+                pass
+            threading.Thread(target=os.waitpid, args=(t["pid"], 0), daemon=True).start()   # sem zombies
+            log(f"consola {tid} fechada")
+            return
+        if t["writer"] is not None:
+            t["writer"].close()
+        if t["task"] is not None:
             t["task"].cancel()
 
     def close_all_tunnels(self) -> None:

@@ -129,6 +129,12 @@ Host robot1
     ProxyCommand <python> <repo>/tools/ws_tunnel.py robot1
 ```
 
+**Consola web:** o mesmo mecanismo abre uma shell (`bash -l`, utilizador `ubuntu`) num pseudo-terminal
+no robô — `/agent?tunnel=robot1&kind=pty` com o token, ou `tunnel.console_handler(req, robot, user)`
+chamado pela página de admin depois de autenticar o admin (frames binários = terminal, texto =
+`{"type":"resize","cols":..,"rows":..}`; protocolo completo no topo de `relay/tunnel.py`).
+`CONSOLE=0` no `agent.env` desliga-a num robô. Teste: `python tools/console_test.py robot1`.
+
 Depois: `ssh robot1`, `scp ficheiro robot1:`. A chave pública tem de estar no `~/.ssh/authorized_keys`
 do robô. **Desativar o login por password no SSH dos robôs** antes de ligar o túnel.
 
