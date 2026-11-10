@@ -45,13 +45,22 @@ classdef TurtleBot < handle
             obj.ReadOpts = weboptions("ContentType", "text", "Timeout", opts.Timeout);
             obj.WriteOpts = weboptions("MediaType", "application/json", "ContentType", "text", ...
                                        "Timeout", opts.Timeout);
-            obj.connect();
+            try
+                obj.connect();
+            catch ME
+                throwAsCaller(ME);      % erro curto, na linha do aluno
+            end
         end
 
         function connect(obj)
+            % Liga-se (outra vez) ao robô e passa a controlá-lo.
             body = struct("user", obj.User);
             if obj.Key ~= "", body.key = obj.Key; end
-            r = obj.post("connect", body, false);
+            try
+                r = obj.post("connect", body, false);
+            catch ME
+                throwAsCaller(ME);
+            end
             obj.Session = string(r.session);
             obj.IsController = logical(r.controller);
             obj.LastSeq = -1;
@@ -62,7 +71,11 @@ classdef TurtleBot < handle
 
         function s = scan(obj)
             % Devolve o próximo scan (diferente do anterior). Espera até ~2 s por um novo.
-            s = obj.read("scan", true);
+            try
+                s = obj.read("scan", true);
+            catch ME
+                throwAsCaller(ME);
+            end
             s.ranges = s.ranges(:);
             s.angles = s.angles(:);
         end
@@ -81,14 +94,22 @@ classdef TurtleBot < handle
             else
                 fn = @() webread(url, "session", obj.Session, obj.ReadOpts);
             end
-            txt = obj.call(fn);
+            try
+                txt = obj.call(fn, topic, true);
+            catch ME
+                throwAsCaller(ME);
+            end
             data = jsondecode(txt);
             if onlyNew && isfield(data, "seq"), obj.LastSeq = data.seq; end
         end
 
         function cmd(obj, v, w)
             % Envia velocidade (m/s, rad/s). Erro se outro aluno tiver tomado o controlo.
-            obj.post("cmd", struct("session", obj.Session, "v", round(v, 3), "w", round(w, 3)), true);
+            try
+                obj.post("cmd", struct("session", obj.Session, "v", round(v, 3), "w", round(w, 3)), true);
+            catch ME
+                throwAsCaller(ME);
+            end
         end
 
         function stop(obj)
@@ -116,11 +137,7 @@ classdef TurtleBot < handle
     methods (Access = private)
         function r = post(obj, what, body, retry)
             url = obj.BaseUrl + "/api/" + obj.Robot + "/" + what;
-            if retry
-                txt = obj.call(@() webwrite(url, obj.withSession(body), obj.WriteOpts));
-            else
-                txt = webwrite(url, body, obj.WriteOpts);
-            end
+            txt = obj.call(@() webwrite(url, obj.withSession(body), obj.WriteOpts), what, retry);
             r = jsondecode(txt);
         end
 
@@ -128,24 +145,57 @@ classdef TurtleBot < handle
             if isfield(body, "session"), body.session = obj.Session; end
         end
 
-        function txt = call(obj, fn)
-            % Executa um pedido; se a sessão expirou (401) volta a ligar e repete uma vez.
+        function txt = call(obj, fn, what, retry)
+            % Executa um pedido. Sessão expirada (401) -> volta a ligar e repete uma vez (se retry).
+            % Os outros erros HTTP passam a uma mensagem clara para os alunos.
             try
                 txt = fn();
             catch ME
-                if contains(ME.message, "401")
+                code = TurtleBot.httpStatus(ME);
+                if code == 401 && retry
                     obj.connect();
                     txt = fn();     % fn volta a ler obj.Session através de withSession/args
-                elseif contains(ME.message, "409")
-                    obj.IsController = false;
-                    error("TurtleBot:notController", ...
-                        "Outro aluno ligou-se a %s depois de ti e tem agora o controlo.", obj.Robot);
-                elseif contains(ME.message, "503")
-                    error("TurtleBot:offline", "%s está offline.", obj.Robot);
-                else
-                    rethrow(ME);
+                    return
                 end
+                throw(obj.friendlyError(code, what, ME));
             end
+        end
+
+        function E = friendlyError(obj, code, what, ME)
+            r = obj.Robot;
+            switch code
+                case 401
+                    id = "sessionExpired"; msg = "A sessão expirou: volta a criar o TurtleBot.";
+                case 403
+                    id = "badKey"; msg = sprintf("Chave errada para o %s: confirma a chave do teu grupo.", r);
+                case 404
+                    id = "unknownRobot"; msg = sprintf("Não existe nenhum robô '%s' (usa robot1, robot2, ...).", r);
+                case 409
+                    obj.IsController = false;
+                    id = "notController";
+                    msg = sprintf("Outro aluno ligou-se ao %s depois de ti e tem agora o controlo. Para voltar a controlar: tb.connect()", r);
+                case 423
+                    id = "locked"; msg = sprintf("O %s está bloqueado pelo professor.", r);
+                case 503
+                    id = "offline"; msg = sprintf("O %s está offline (desligado ou sem rede).", r);
+                case 504
+                    id = "noData"; msg = sprintf("O %s ainda não enviou dados de '%s'.", r, what);
+                    if what == "scan"
+                        msg = msg + " O LiDAR só roda com o robô fora da base.";
+                    end
+                otherwise
+                    E = ME;
+                    return
+            end
+            E = MException("TurtleBot:" + id, "%s", msg);
+        end
+    end
+
+    methods (Static, Access = private)
+        function code = httpStatus(ME)
+            % "The server returned the status 504 with message ..." -> 504 (0 se não for erro HTTP)
+            tok = regexp(ME.message, "status (\d{3})", "tokens", "once");
+            if isempty(tok), code = 0; else, code = str2double(tok{1}); end
         end
     end
 end

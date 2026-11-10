@@ -73,17 +73,20 @@
   @keyframes pulse { from { transform: scale(1.8); } to { transform: scale(1); } }
   select { font: inherit; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
   .consoles { font-size: 12px; color: var(--warn); margin: 0 0 8px; }
-  #consoleOverlay { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, .55);
-                    display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #consoleOverlay { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, .55); }
   #consoleOverlay[hidden] { display: none; }
-  .console-box { width: min(1100px, 100%); height: min(720px, 100%); display: flex; flex-direction: column;
-                 background: #0d1117; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  /* encostado ao topo (não centrado): se a janela do browser for mais alta do que o ecrã, continua visível */
+  .console-box { position: fixed; display: flex; flex-direction: column;
+                 top: 64px; height: min(720px, calc(100vh - 80px));
+                 left: max(16px, calc((100vw - 1100px) / 2)); right: max(16px, calc((100vw - 1100px) / 2));
+                 background: #000; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
   .console-head { display: flex; gap: 12px; align-items: center; padding: 8px 12px; background: var(--card);
                   border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .console-head .ok { color: var(--ok); } .console-head .bad { color: var(--bad); }
   .console-head button { margin-left: auto; }
   .console-hint { font-size: 12px; }
-  #consoleTerm { flex: 1; min-height: 0; padding: 6px; }
+  .console-head { flex: none; }
+  #consoleTerm { flex: 1 1 0; min-height: 0; position: relative; overflow: hidden; margin: 6px; }
 </style>
 </head>
 <body>
@@ -374,10 +377,14 @@ function loadXterm() {
     document.head.appendChild(s);
   });
   if (!xtermReady) {
-    const css = document.createElement("link");
-    css.rel = "stylesheet"; css.href = XTERM_CSS;
-    document.head.appendChild(css);
-    xtermReady = script(XTERM_JS).then(() => script(FIT_JS));
+    // o CSS tem de estar aplicado antes do term.open, senão o xterm mede mal as células e o fit erra
+    const css = new Promise((ok, fail) => {
+      const l = document.createElement("link");
+      l.rel = "stylesheet"; l.href = XTERM_CSS;
+      l.onload = ok; l.onerror = () => fail(new Error("não consegui carregar " + XTERM_CSS));
+      document.head.appendChild(l);
+    });
+    xtermReady = Promise.all([css, script(XTERM_JS).then(() => script(FIT_JS))]);
     xtermReady.catch(() => { xtermReady = null; });
   }
   return xtermReady;
@@ -413,7 +420,18 @@ async function openConsole(robot) {
                               fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace' });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  // Ctrl+Shift+X fecha: apanhado aqui porque, com o foco no terminal, o xterm fica com as teclas
+  // (e no Firefox Ctrl+Shift+X numa caixa de texto troca a direção do texto)
+  term.attachCustomKeyEventHandler((e) => {
+    if (isCloseKey(e)) {
+      if (e.type === "keydown") { e.preventDefault(); setTimeout(closeConsole); }
+      return false;
+    }
+    return true;
+  });
   term.open($("consoleTerm"));
+  // medir só depois de o painel ter tamanho (o Firefox ainda não o tinha no mesmo frame)
+  await new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok)));
   fit.fit();
 
   let ticket;
@@ -446,10 +464,13 @@ async function openConsole(robot) {
 }
 
 $("consoleClose").addEventListener("click", closeConsole);
-document.addEventListener("keydown", (e) => {
-  // Esc vai para a shell (vi, less…); fechar é com o botão ou Ctrl+Shift+X
-  if (consoleSession && e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "x") closeConsole();
-});
+// Esc vai para a shell (vi, less…); fechar é com o botão ou Ctrl+Shift+X
+function isCloseKey(e) {
+  return e.ctrlKey && e.shiftKey && !e.altKey && (e.code === "KeyX" || e.key.toLowerCase() === "x");
+}
+document.addEventListener("keydown", (e) => {   // foco fora do terminal (ex.: no botão Fechar)
+  if (consoleSession && isCloseKey(e)) { e.preventDefault(); closeConsole(); }
+}, true);
 
 $("evRobot").addEventListener("change", render);
 $("evNoAgent").addEventListener("change", render);
