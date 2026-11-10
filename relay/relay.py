@@ -33,6 +33,8 @@ import time
 
 from aiohttp import WSMsgType, web
 
+import tunnel  # túnel SSH de administração (relay/tunnel.py)
+
 log = logging.getLogger("relay")
 
 # --------------------------------------------------------------------------- configuração
@@ -221,6 +223,8 @@ def get_session(r: Robot, sid: str | None) -> Session | None:
 
 # --------------------------------------------------------------------------- rotas: robô
 async def agent_ws(req: web.Request) -> web.WebSocketResponse:
+    if tunnel.wants_tunnel(req):                       # /agent?tunnel=robotN (admin, ver tunnel.py)
+        return await tunnel.handler(req)
     ws = web.WebSocketResponse(heartbeat=10, max_msg_size=4 * 1024 * 1024, compress=False)
     await ws.prepare(req)
     ip = client_ip(req)
@@ -242,11 +246,15 @@ async def agent_ws(req: web.Request) -> web.WebSocketResponse:
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
-                await r.on_data(msg.data)
+                if not await tunnel.on_agent_text(r, msg.data):
+                    await r.on_data(msg.data)
+            elif msg.type == WSMsgType.BINARY:
+                await tunnel.on_agent_binary(r, msg.data)
             elif msg.type == WSMsgType.ERROR:
                 break
     finally:
         if r.ws is ws:
+            await tunnel.on_agent_gone(r)
             r.ws = None
             r.latest.clear()
             EVENTS.write("robot_offline", robot=r.name, ip=ip)
@@ -361,6 +369,7 @@ async def housekeeping(_app: web.Application):
 def make_app() -> web.Application:
     app = web.Application(client_max_size=64 * 1024)
     app.cleanup_ctx.append(housekeeping)
+    tunnel.init(ROBOTS_BY_NAME, EVENTS, client_ip)
     app.add_routes([
         web.get("/healthz", healthz),
         web.get("/agent", agent_ws),

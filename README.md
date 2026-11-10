@@ -102,6 +102,26 @@ sudo certbot --nginx -d tb.lexicode-consulting.pt
    `agent.env` (600) e `@reboot` no crontab do `ubuntu`. Logs em `~/tb4_agent/agent.log`.
    O `AGENT_TOKEN` está no `.env.nomad` local (fora do git) — o relay tem de usar o mesmo.
 
+## Acesso SSH remoto aos robôs (sem cabo)
+
+A eduroam não aceita ligações de entrada e bloqueia o Tailscale, por isso o SSH passa pela ligação
+que o agente já mantém com o relay: `wss://…/agent?tunnel=robot1&port=22` com
+`Authorization: Bearer <ADMIN_TOKEN>` (código em `relay/tunnel.py`; desligado se `ADMIN_TOKEN` vazio;
+só os portos de `TUNNEL_PORTS`). Aberturas, recusas e fechos ficam no log de eventos.
+
+No PC de administração (precisa de `aiohttp` e do `ADMIN_TOKEN` em `TB_ADMIN_TOKEN` ou no `.env.nomad`):
+
+```
+Host robot1
+    HostKeyAlias robot1
+    User ubuntu
+    IdentityFile ~/.ssh/id_ed25519
+    ProxyCommand <python> <repo>/tools/ws_tunnel.py robot1
+```
+
+Depois: `ssh robot1`, `scp ficheiro robot1:`. A chave pública tem de estar no `~/.ssh/authorized_keys`
+do robô. **Desativar o login por password no SSH dos robôs** antes de ligar o túnel.
+
 ## Alunos (MATLAB)
 
 ```matlab

@@ -45,6 +45,9 @@ SCAN_MAX_HZ = float(os.environ.get("SCAN_MAX_HZ", "20"))
 STAMPED = os.environ.get("CMD_VEL_STAMPED", "1") == "1"
 BLOCKED = {t for t in os.environ.get("BLOCKED_TOPICS", "cmd_vel,cmd_vel_unstamped,robot_description").split(",") if t}
 MAX_MSG_BYTES = int(os.environ.get("MAX_MSG_BYTES", str(1024 * 1024)))
+# túnel de administração (SSH pelo relay): portos locais que o relay pode abrir; vazio = desligado
+TUNNEL_PORTS = {int(p) for p in os.environ.get("TUNNEL_PORTS", "22").split(",") if p.strip()}
+TUNNEL_ID_LEN = 8
 
 
 def log(*a):
@@ -111,7 +114,14 @@ class WebSocket:
     async def send_text(self, text: str) -> None:
         await self._send_frame(0x1, text.encode())
 
+    async def send_binary(self, data: bytes) -> None:
+        await self._send_frame(0x2, data)
+
     async def recv_text(self) -> str:
+        return (await self.recv())[1].decode(errors="replace")
+
+    async def recv(self) -> tuple[int, bytes]:
+        """Próxima mensagem completa: (0x1 texto | 0x2 binário, bytes)."""
         buf, first_op = b"", None
         while True:
             try:
@@ -141,7 +151,7 @@ class WebSocket:
             elif op == 0x0:
                 buf += data
             if fin and first_op is not None:
-                return buf.decode(errors="replace")
+                return first_op, buf
 
     def close(self) -> None:
         try:
@@ -277,6 +287,7 @@ class Link:
         self.node: Agent | None = None
         self.connected = False
         self.dropped = 0
+        self.tunnels: dict[str, dict] = {}
 
     def outbox(self, topic: str, text: str) -> None:   # chamado pela thread ROS
         if self.connected:
@@ -298,13 +309,77 @@ class Link:
 
     async def receiver(self, ws: WebSocket) -> None:
         while True:
-            msg = json.loads(await ws.recv_text())
+            op, data = await ws.recv()
+            if op == 0x2:                                   # dados de túnel: <id><payload>
+                self.tunnel_data(data[:TUNNEL_ID_LEN].decode(errors="replace"), data[TUNNEL_ID_LEN:])
+                continue
+            msg = json.loads(data)
             kind = msg.get("type")
             if kind == "cmd":
                 self.node.command(float(msg.get("v", 0.0)), float(msg.get("w", 0.0)))
             elif kind == "subs":
                 self.node.set_wanted(msg.get("topics", []))
                 log(f"relay pede: {msg.get('topics')}")
+            elif kind == "tunnel_open":
+                self.tunnel_open(ws, str(msg.get("id")), int(msg.get("port", 0)))
+            elif kind == "tunnel_close":
+                self.tunnel_close(str(msg.get("id")))
+
+    # ---------------------------------------------------------------- túnel (SSH pelo relay)
+    def tunnel_open(self, ws: WebSocket, tid: str, port: int) -> None:
+        if port not in TUNNEL_PORTS or len(tid) != TUNNEL_ID_LEN or tid in self.tunnels:
+            log(f"túnel {tid} para o porto {port} recusado")
+            asyncio.create_task(ws.send_text(json.dumps({"type": "tunnel_closed", "id": tid})))
+            return
+        t = {"writer": None, "pending": []}
+        self.tunnels[tid] = t
+        t["task"] = asyncio.create_task(self.tunnel_run(ws, tid, port, t))
+
+    async def tunnel_run(self, ws: WebSocket, tid: str, port: int, t: dict) -> None:
+        log(f"túnel {tid} aberto -> 127.0.0.1:{port}")
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            t["writer"] = writer
+            for chunk in t.pop("pending"):
+                writer.write(chunk)
+            await writer.drain()
+            while True:
+                chunk = await reader.read(32768)
+                if not chunk:
+                    break
+                await ws.send_binary(tid.encode() + chunk)
+        except Exception as e:
+            log(f"túnel {tid}: {type(e).__name__}: {e}")
+        finally:
+            if self.tunnels.pop(tid, None) is not None:
+                try:
+                    await ws.send_text(json.dumps({"type": "tunnel_closed", "id": tid}))
+                except Exception:
+                    pass
+            if writer is not None:
+                writer.close()
+            log(f"túnel {tid} fechado")
+
+    def tunnel_data(self, tid: str, payload: bytes) -> None:
+        t = self.tunnels.get(tid)
+        if t is None:
+            return
+        if t["writer"] is None:
+            t["pending"].append(payload)
+        else:
+            t["writer"].write(payload)
+
+    def tunnel_close(self, tid: str) -> None:
+        t = self.tunnels.pop(tid, None)
+        if t is not None:
+            if t["writer"] is not None:
+                t["writer"].close()
+            t["task"].cancel()
+
+    def close_all_tunnels(self) -> None:
+        for tid in list(self.tunnels):
+            self.tunnel_close(tid)
 
     async def run(self) -> None:
         backoff = 1.0
@@ -326,6 +401,7 @@ class Link:
             finally:
                 self.connected = False
                 self.pending.clear()
+                self.close_all_tunnels()
                 if ws:
                     ws.close()
                 if self.node:
@@ -353,7 +429,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop("a terminar")
+        try:
+            node.stop("a terminar")          # pode falhar se o ROS já fechou (SIGTERM)
+        except Exception:
+            pass
         node.destroy_node()
         rclpy.try_shutdown()
 
