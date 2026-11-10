@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Teste ponta-a-ponta do relay do lado do aluno (o mesmo fluxo que matlab/TurtleBot.m).
-Uso: python tools/student_test.py [BASE_URL] [robot]
+Uso: python tools/student_test.py [BASE_URL] [robot] [chave]
 """
 import json
 import sys
@@ -11,6 +11,7 @@ import urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8080").rstrip("/")
 ROBOT = sys.argv[2] if len(sys.argv) > 2 else "robot1"
+KEY = sys.argv[3] if len(sys.argv) > 3 else ""
 
 
 def call(method, path, body=None, query=None):
@@ -36,7 +37,7 @@ def check(name, cond, extra=""):
 
 
 ok = True
-st, a = call("POST", "connect", {"user": "aluno_A"})
+st, a = call("POST", "connect", {"user": "aluno_A", "key": KEY})
 ok &= check("A connect", st == 200 and a["controller"], a)
 sa = a["session"]
 
@@ -62,7 +63,7 @@ st, r = call("POST", "cmd", {"session": sa, "v": 0.05, "w": 0.2})
 ok &= check("A cmd", st == 200, r)
 
 # B liga-se depois -> passa a controlar; A perde o controlo
-st, bb = call("POST", "connect", {"user": "aluno_B"})
+st, bb = call("POST", "connect", {"user": "aluno_B", "key": KEY})
 sb = bb["session"]
 st, r = call("POST", "cmd", {"session": sa, "v": 0.1, "w": 0})
 ok &= check("A perdeu o controlo (409)", st == 409 and r.get("controller") == "aluno_B", r)

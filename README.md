@@ -21,6 +21,9 @@ tb4_agent (ROS 2) ── wss://…/agent ──► tbrelay (aiohttp) ◄── h
 
 ## Regras do relay
 
+- **Uma chave curta por robô** (`ROBOT_KEYS=robot1:k7mq,…` no `.env.nomad`), dada a cada grupo.
+  Sem chave definida para um robô, vale `STUDENT_KEY`; se também estiver vazia, não é pedida chave.
+
 - **Controla o robô quem fez `connect` por último.** O anterior passa a receber `409` nos comandos.
   Cada troca de controlo manda primeiro um STOP ao robô.
 - O robô **para sozinho** se não receber comandos durante 1 s ou se perder a ligação ao relay.
@@ -31,7 +34,7 @@ tb4_agent (ROS 2) ── wss://…/agent ──► tbrelay (aiohttp) ◄── h
 
 | Método | Caminho | Corpo / query | Resposta |
 |---|---|---|---|
-| POST | `/api/<robot>/connect` | `{"user":"a12345","key":"<STUDENT_KEY>"}` | `{"session":…, "controller":true}` |
+| POST | `/api/<robot>/connect` | `{"user":"a12345","key":"<chave do robô>"}` | `{"session":…, "controller":true}` |
 | GET | `/api/<robot>/<tópico>` | `?session=…&after=<seq>` | última mensagem (long-poll até 2 s se `after`) |
 | POST | `/api/<robot>/cmd` | `{"session":…,"v":0.1,"w":0}` | `200` / `409` (não controlas) / `401` / `503` |
 | POST | `/api/<robot>/disconnect` | `{"session":…}` | |
@@ -102,7 +105,7 @@ sudo certbot --nginx -d tb.lexicode-consulting.pt
 ## Alunos (MATLAB)
 
 ```matlab
-tb = TurtleBot("robot1", "a12345");          % liga-se e passa a controlar
+tb = TurtleBot("robot1", "a12345", "Key", "k7mq");   % liga-se e passa a controlar
 while true
     s = tb.scan();                           % s.ranges, s.angles (como antes)
     [v, w] = controlador(s);

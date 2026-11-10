@@ -9,7 +9,7 @@ Robôs (tb4_agent):   WebSocket  /agent
                     {"type":"cmd","v":0.1,"w":0.0}                      (velocidade)
 
 Alunos (MATLAB webread/webwrite, ou qualquer cliente HTTP):
-    POST /api/<robot>/connect      {"user":"a12345","key":"<chave da turma>"}  -> {"session":..,"controller":true}
+    POST /api/<robot>/connect      {"user":"a12345","key":"<chave do robô>"}  -> {"session":..,"controller":true}
     GET  /api/<robot>/<topic>?session=..&after=<seq>                       -> última mensagem desse tópico
                                     (com after=N espera até 2 s por uma mensagem com seq > N)
     POST /api/<robot>/cmd          {"session":..,"v":0.1,"w":0.0}
@@ -39,6 +39,8 @@ log = logging.getLogger("relay")
 ROBOTS = [r.strip() for r in os.environ.get("ROBOTS", "robot1,robot2,robot3,robot4").split(",") if r.strip()]
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 STUDENT_KEY = os.environ.get("STUDENT_KEY", "")            # vazio = sem chave de turma
+# chave por robô (uma por grupo): ROBOT_KEYS=robot1:abcd,robot2:efgh — tem prioridade sobre STUDENT_KEY
+ROBOT_KEYS = dict(kv.split(":", 1) for kv in os.environ.get("ROBOT_KEYS", "").replace(" ", "").split(",") if ":" in kv)
 SESSION_TIMEOUT = float(os.environ.get("SESSION_TIMEOUT_S", "30"))
 TOPIC_IDLE = float(os.environ.get("TOPIC_IDLE_S", "5"))      # tópico deixa de ser pedido ao robô após X s sem pedidos
 LONGPOLL_MAX = float(os.environ.get("LONGPOLL_MAX_S", "2"))
@@ -260,8 +262,9 @@ async def connect(req: web.Request) -> web.Response:
     user = str(data.get("user", "")).strip()[:64]
     if not user:
         return err(400, "falta o campo 'user' (ex.: número de aluno)")
-    if STUDENT_KEY and data.get("key") != STUDENT_KEY:
-        return err(403, "chave da turma inválida")
+    key = ROBOT_KEYS.get(r.name, STUDENT_KEY)
+    if key and str(data.get("key", "")).strip().lower() != key.lower():
+        return err(403, f"chave inválida para o {r.name}")
     s = Session(r.name, user, client_ip(req))
     r.sessions[s.id] = s
     EVENTS.write("connect", robot=r.name, user=user, ip=s.ip)

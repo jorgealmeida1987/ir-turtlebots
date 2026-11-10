@@ -2,7 +2,7 @@ classdef TurtleBot < handle
     % TurtleBot - acesso a um TurtleBot4 através do relay (HTTPS).
     %
     %   tb = TurtleBot("robot1", "a12345");                 % liga-se (e passa a controlar o robô)
-    %   tb = TurtleBot("robot1", "a12345", "Key", "xyz");   % se a turma tiver chave
+    %   tb = TurtleBot("robot1", "a12345", "Key", "k7mq");  % chave do robô (dada a cada grupo)
     %
     %   s = tb.scan();          % próximo scan LiDAR: s.ranges, s.angles (como no tcpclient antigo)
     %   o = tb.read("odom");    % qualquer outro tópico do robô (odom, battery_state, imu, ...)
