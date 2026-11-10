@@ -95,6 +95,9 @@ sudo certbot --nginx -d tb.lexicode-consulting.pt
    `scp -r robot <robô>:/tmp/tb4_agent && ssh -t <robô> 'bash /tmp/tb4_agent/install.sh robot1'`,
    e depois preencher `AGENT_TOKEN` em `/etc/tb4_agent.env`.
    Logs: `journalctl -u tb4_agent -f`.
+   **Sem sudo** (como está hoje no robot1): `robot/run_agent_user.sh` em `~/tb4_agent/`, com
+   `agent.env` (600) e `@reboot` no crontab do `ubuntu`. Logs em `~/tb4_agent/agent.log`.
+   O `AGENT_TOKEN` está no `.env.nomad` local (fora do git) — o relay tem de usar o mesmo.
 
 ## Alunos (MATLAB)
 
