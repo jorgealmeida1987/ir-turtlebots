@@ -38,6 +38,10 @@ quem controla, alunos ligados (com IP e tempo parado) e os últimos eventos. Aç
 (um aluno ou todos; o `TurtleBot.m` volta a ligar-se sozinho), **Bloquear** (expulsa todos e recusa novas
 ligações com `423` até desbloquear; não sobrevive a um reinício do relay) e **Parar todos**.
 O relay pede sempre `battery_state` e `dock_status` aos robôs online (`MONITOR_TOPICS`), mesmo sem alunos.
+**Consola** (botão por robô online): shell `ubuntu` no robô em xterm.js. A página pede um bilhete de uso único
+(`POST /api/admin/<robot>/console-ticket`, válido 30 s) e abre `wss://…/agent?console=<robot>&ticket=…`.
+Só com `ADMIN_KEY` de 32+ caracteres; 10 tentativas falhadas (chave ou bilhete) por IP e por minuto → `429`.
+Consolas abertas aparecem no cartão do robô; aberturas, fechos e recusas ficam nos eventos.
 Para abrir a página na raiz do domínio, acrescentar ao bloco 443 do vhost `location = / { return 302 /api/admin/; }`.
 
 ## API

@@ -276,6 +276,8 @@ def get_session(r: Robot, sid: str | None) -> Session | None:
 
 # --------------------------------------------------------------------------- rotas: robô
 async def agent_ws(req: web.Request) -> web.WebSocketResponse:
+    if "console" in req.query:                         # /agent?console=robotN&ticket=.. (página de gestão)
+        return await console_ws(req)
     if tunnel.wants_tunnel(req):                       # /agent?tunnel=robotN (admin, ver tunnel.py)
         return await tunnel.handler(req)
     ws = web.WebSocketResponse(heartbeat=10, max_msg_size=4 * 1024 * 1024, compress=False)
@@ -406,11 +408,77 @@ async def healthz(_req: web.Request) -> web.Response:
 
 
 # --------------------------------------------------------------------------- rotas: gestão (professor)
+ADMIN_MAX_FAILS = 10                 # tentativas falhadas (chave ou bilhete) por IP e por minuto
+CONSOLE_TICKET_TTL = 30.0            # segundos
+_fails: dict[str, list[float]] = {}  # ip -> horas das tentativas falhadas no último minuto
+_tickets: dict[str, tuple[str, float]] = {}   # bilhete -> (robô, expira em)
+
+
+def _throttled(ip: str) -> bool:
+    t = now()
+    recent = [x for x in _fails.get(ip, ()) if t - x < 60]
+    if recent:
+        _fails[ip] = recent
+    else:
+        _fails.pop(ip, None)
+    return len(recent) >= ADMIN_MAX_FAILS
+
+
+def _failed(ip: str) -> None:
+    _fails.setdefault(ip, []).append(now())
+
+
+def _too_many() -> web.HTTPTooManyRequests:
+    return web.HTTPTooManyRequests(text=json.dumps({"error": "demasiadas tentativas falhadas: espera um minuto"}),
+                                   content_type="application/json")
+
+
 def require_admin(req: web.Request) -> None:
+    ip = client_ip(req)
+    if _throttled(ip):
+        raise _too_many()
     key = req.headers.get("X-Admin-Key", "")
     if not ADMIN_KEY or not secrets.compare_digest(key.encode(), ADMIN_KEY.encode()):
+        _failed(ip)
         raise web.HTTPUnauthorized(text=json.dumps({"error": "chave de administração inválida"}),
                                    content_type="application/json")
+
+
+def console_enabled() -> bool:
+    # a consola é uma shell no robô aberta à internet: só com uma ADMIN_KEY longa
+    return len(ADMIN_KEY) >= 32
+
+
+def new_console_ticket(robot: str) -> str:
+    t = now()
+    for k, (_r, exp) in list(_tickets.items()):
+        if exp < t:
+            del _tickets[k]
+    ticket = secrets.token_urlsafe(24)
+    _tickets[ticket] = (robot, t + CONSOLE_TICKET_TTL)
+    return ticket
+
+
+async def console_ws(req: web.Request) -> web.StreamResponse:
+    """Consola web da página de gestão: /agent?console=<robot>&ticket=<bilhete>&cols=..&rows=..
+    (entra por /agent porque é a única location do nginx com Upgrade)."""
+    ip = client_ip(req)
+    robot = req.query.get("console", "")
+    if _throttled(ip):
+        raise _too_many()
+    entry = _tickets.pop(req.query.get("ticket", ""), None)       # uso único
+    if not console_enabled() or entry is None or entry[0] != robot or entry[1] < now():
+        _failed(ip)
+        EVENTS.write("console_denied", ip=ip, robot=robot)
+        raise web.HTTPForbidden(text="bilhete inválido ou expirado")
+
+    def num(name: str, default: int) -> int:
+        try:
+            return max(10, min(int(req.query.get(name, default)), 500))
+        except ValueError:
+            return default
+
+    return await tunnel.console_handler(req, robot, user="admin", cols=num("cols", 80), rows=num("rows", 24))
 
 
 async def admin_redirect(_req: web.Request) -> web.Response:
@@ -430,6 +498,7 @@ async def admin_status(req: web.Request) -> web.Response:
         n = 100
     return web.json_response({"now": round(now(), 1),
                               "robots": [r.status(admin=True) for r in ROBOTS_BY_NAME.values()],
+                              "consoles": tunnel.active(), "console_enabled": console_enabled(),
                               "events": EVENTS.tail(n)})
 
 
@@ -449,6 +518,12 @@ async def admin_action(req: web.Request) -> web.Response:
         await r.send(STOP)
     elif action in ("lock", "unlock"):
         await r.lock(action == "lock")
+    elif action == "console-ticket":
+        if not console_enabled():
+            return err(403, "consola desligada: a ADMIN_KEY tem de ter pelo menos 32 caracteres")
+        if r.ws is None:
+            return err(503, f"o {r.name} está offline")
+        return web.json_response({"ticket": new_console_ticket(r.name), "expires_s": CONSOLE_TICKET_TTL})
     else:
         return err(404, f"ação desconhecida: {action}")
     return web.json_response({"ok": True, "robot": r.status(admin=True)})
@@ -498,4 +573,6 @@ if __name__ == "__main__":
                         format="%(asctime)s %(levelname)s %(message)s")
     if not AGENT_TOKEN:
         log.warning("AGENT_TOKEN vazio: qualquer pessoa pode fazer-se passar por um robô!")
+    if ADMIN_KEY and not console_enabled():
+        log.warning("ADMIN_KEY com menos de 32 caracteres: consola web desligada")
     web.run_app(make_app(), host=HOST, port=PORT, access_log=None)

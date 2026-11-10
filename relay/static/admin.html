@@ -72,6 +72,18 @@
   #updated.pulse::before { animation: pulse .6s ease-out; }
   @keyframes pulse { from { transform: scale(1.8); } to { transform: scale(1); } }
   select { font: inherit; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  .consoles { font-size: 12px; color: var(--warn); margin: 0 0 8px; }
+  #consoleOverlay { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, .55);
+                    display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #consoleOverlay[hidden] { display: none; }
+  .console-box { width: min(1100px, 100%); height: min(720px, 100%); display: flex; flex-direction: column;
+                 background: #0d1117; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .console-head { display: flex; gap: 12px; align-items: center; padding: 8px 12px; background: var(--card);
+                  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .console-head .ok { color: var(--ok); } .console-head .bad { color: var(--bad); }
+  .console-head button { margin-left: auto; }
+  .console-hint { font-size: 12px; }
+  #consoleTerm { flex: 1; min-height: 0; padding: 6px; }
 </style>
 </head>
 <body>
@@ -111,6 +123,18 @@
   </main>
 </div>
 
+<div id="consoleOverlay" hidden>
+  <div class="console-box">
+    <div class="console-head">
+      <b id="consoleTitle">Consola</b>
+      <span id="consoleStatus" class="muted"></span>
+      <span class="muted console-hint">fechar: botão ou Ctrl+Shift+X</span>
+      <button id="consoleClose">Fechar</button>
+    </div>
+    <div id="consoleTerm"></div>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -145,6 +169,7 @@ async function api(path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (r.status === 401) { showLogin("Chave inválida."); throw new Error("401"); }
+  if (r.status === 429) { showLogin("Demasiadas tentativas falhadas: espera um minuto."); throw new Error("401"); }
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
 }
@@ -223,8 +248,10 @@ function robotCard(r, t) {
     </dl>
     <div class="muted">alunos ligados (${r.users.length})</div>
     <ul class="users">${users}</ul>
+    ${consolesHtml(r.robot, t)}
     <div class="actions">
       <button class="danger" data-act="stop" data-robot="${r.robot}">Parar</button>
+      ${r.online && last.console_enabled ? `<button data-act="console" data-robot="${r.robot}" title="Shell no robô (utilizador ubuntu)">Consola</button>` : ""}
       <button data-act="kick" data-robot="${r.robot}" data-session="all" ${r.users.length ? "" : "disabled"}>Expulsar todos</button>
       <button data-act="${r.locked ? "unlock" : "lock"}" data-robot="${r.robot}">${r.locked ? "Desbloquear" : "Bloquear"}</button>
     </div>
@@ -304,7 +331,7 @@ $("loginForm").addEventListener("submit", async (ev) => {
 
 $("logout").addEventListener("click", () => {
   try { localStorage.removeItem("tbAdminKey"); } catch (e) {}
-  key = ""; showLogin();
+  key = ""; closeConsole(); showLogin();
 });
 
 $("stopAll").addEventListener("click", async () => {
@@ -319,10 +346,109 @@ document.addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-act]");
   if (!btn) return;
   const { act, robot, session } = btn.dataset;
+  if (act === "console") { openConsole(robot); return; }
   if (act === "lock" && !confirm(`Bloquear o ${robot}? Os alunos ligados são expulsos e ninguém se consegue ligar até desbloqueares.`)) return;
   btn.disabled = true;
   try { await api(`/api/admin/${robot}/${act}`, session ? { session } : {}); } catch (e) { alert(e.message); }
   refresh();
+});
+
+// ------------------------------------------------------------------ consola web (xterm.js)
+// Consolas/túneis abertos neste robô (tunnel.active() no /api/admin/status).
+function consolesHtml(robot, t) {
+  const list = (last.consoles || []).filter((c) => c.robot === robot);
+  if (!list.length) return "";
+  return `<div class="consoles">${list.map((c) =>
+    `<div>⌨ ${c.kind === "pty" ? "consola" : "túnel " + esc(c.kind)} aberta por ${esc(c.user)} · ${esc(c.ip)} · há ${dur(c.age_s)}</div>`).join("")}</div>`;
+}
+
+const XTERM_JS = "https://cdnjs.cloudflare.com/ajax/libs/xterm/5.5.0/xterm.js";
+const XTERM_CSS = "https://cdnjs.cloudflare.com/ajax/libs/xterm/5.5.0/xterm.min.css";
+const FIT_JS = "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js";   // não existe no cdnjs
+let xtermReady = null;
+
+function loadXterm() {
+  const script = (src) => new Promise((ok, fail) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = ok; s.onerror = () => fail(new Error("não consegui carregar " + src));
+    document.head.appendChild(s);
+  });
+  if (!xtermReady) {
+    const css = document.createElement("link");
+    css.rel = "stylesheet"; css.href = XTERM_CSS;
+    document.head.appendChild(css);
+    xtermReady = script(XTERM_JS).then(() => script(FIT_JS));
+    xtermReady.catch(() => { xtermReady = null; });
+  }
+  return xtermReady;
+}
+
+let consoleSession = null;      // { robot, term, ws, observer }
+
+function closeConsole() {
+  if (!consoleSession) return;
+  const { ws, term, observer } = consoleSession;
+  consoleSession = null;
+  observer.disconnect();
+  try { ws.close(); } catch (e) {}
+  term.dispose();
+  $("consoleOverlay").hidden = true;
+  refresh();
+}
+
+async function openConsole(robot) {
+  if (consoleSession) closeConsole();
+  const overlay = $("consoleOverlay"), status = $("consoleStatus");
+  $("consoleTitle").textContent = `Consola — ${robot}`;
+  status.textContent = "a ligar…"; status.className = "muted";
+  $("consoleTerm").innerHTML = "";
+  overlay.hidden = false;
+  try {
+    await loadXterm();
+  } catch (e) {
+    status.textContent = e.message; status.className = "bad";
+    return;
+  }
+  const term = new Terminal({ cursorBlink: true, fontSize: 14, scrollback: 5000,
+                              fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace' });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open($("consoleTerm"));
+  fit.fit();
+
+  let ticket;
+  try {
+    ticket = (await api(`/api/admin/${robot}/console-ticket`, {})).ticket;
+  } catch (e) {
+    term.dispose();
+    status.textContent = "não foi possível abrir: " + e.message; status.className = "bad";
+    return;
+  }
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const q = new URLSearchParams({ console: robot, ticket, cols: term.cols, rows: term.rows });
+  const ws = new WebSocket(`${proto}//${location.host}/agent?${q}`);
+  ws.binaryType = "arraybuffer";
+  const enc = new TextEncoder();
+  const sendResize = () => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  };
+  ws.onopen = () => { status.textContent = "ligado (utilizador ubuntu)"; status.className = "ok"; sendResize(); term.focus(); };
+  ws.onmessage = (e) => { if (e.data instanceof ArrayBuffer) term.write(new Uint8Array(e.data)); };
+  ws.onclose = () => {
+    status.textContent = "ligação terminada"; status.className = "bad";
+    term.write("\r\n\x1b[31m[ligação terminada]\x1b[0m\r\n");
+  };
+  term.onData((d) => { if (ws.readyState === WebSocket.OPEN) ws.send(enc.encode(d)); });
+  term.onResize(sendResize);
+  const observer = new ResizeObserver(() => { try { fit.fit(); } catch (e) {} });
+  observer.observe($("consoleTerm"));
+  consoleSession = { robot, term, ws, observer };
+}
+
+$("consoleClose").addEventListener("click", closeConsole);
+document.addEventListener("keydown", (e) => {
+  // Esc vai para a shell (vi, less…); fechar é com o botão ou Ctrl+Shift+X
+  if (consoleSession && e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "x") closeConsole();
 });
 
 $("evRobot").addEventListener("change", render);
