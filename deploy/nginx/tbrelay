@@ -47,4 +47,9 @@ server {
     location = /healthz {
         proxy_pass http://tbrelay;
     }
+
+    # Página de gestão (professor): a raiz leva a /api/admin/
+    location = / {
+        return 302 /api/admin/;
+    }
 }

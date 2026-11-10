@@ -30,6 +30,16 @@ tb4_agent (ROS 2) ── wss://…/agent ──► tbrelay (aiohttp) ◄── h
 - Ligações, saídas, timeouts e trocas de controlo ficam em `/data/events.jsonl` (volume Docker).
 - O robô só envia os tópicos que algum aluno pediu nos últimos 5 s. Sem alunos, não há tráfego.
 
+## Página de gestão (professor)
+
+`https://tb.lexicode-consulting.pt/api/admin/` — pede a `ADMIN_KEY` do `.env.nomad` (fica guardada no browser).
+Mostra, a cada 2 s, por robô: online/offline, bateria (vermelho < 20 %), na base ou não, chave do robô,
+quem controla, alunos ligados (com IP e tempo parado) e os últimos eventos. Ações: **Parar**, **Expulsar**
+(um aluno ou todos; o `TurtleBot.m` volta a ligar-se sozinho), **Bloquear** (expulsa todos e recusa novas
+ligações com `423` até desbloquear; não sobrevive a um reinício do relay) e **Parar todos**.
+O relay pede sempre `battery_state` e `dock_status` aos robôs online (`MONITOR_TOPICS`), mesmo sem alunos.
+Para abrir a página na raiz do domínio, acrescentar ao bloco 443 do vhost `location = / { return 302 /api/admin/; }`.
+
 ## API
 
 | Método | Caminho | Corpo / query | Resposta |
@@ -38,7 +48,7 @@ tb4_agent (ROS 2) ── wss://…/agent ──► tbrelay (aiohttp) ◄── h
 | GET | `/api/<robot>/<tópico>` | `?session=…&after=<seq>` | última mensagem (long-poll até 2 s se `after`) |
 | POST | `/api/<robot>/cmd` | `{"session":…,"v":0.1,"w":0}` | `200` / `409` (não controlas) / `401` / `503` |
 | POST | `/api/<robot>/disconnect` | `{"session":…}` | |
-| GET | `/api/<robot>/status` · `/api/status` | | quem está ligado, quem controla (base do dashboard) |
+| GET | `/api/<robot>/status` · `/api/status` | | quem está ligado, quem controla (sem IPs) |
 | GET | `/agent` | WebSocket dos robôs (`AGENT_TOKEN`) | |
 
 O scan mantém o formato antigo (`stamp`, `ranges`, `angles`) e acrescenta `topic` e `seq`.

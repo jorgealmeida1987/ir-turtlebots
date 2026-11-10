@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>TurtleBots — gestão</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --fg: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --accent: #2563eb; --chip: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11151c; --card: #1a2029; --fg: #e6e9ee; --muted: #9aa3b2; --line: #2a313c;
+            --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #60a5fa; --chip: #232a35; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+           padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 1; }
+  h1 { font-size: 17px; margin: 0; }
+  main { padding: 16px; max-width: 1400px; margin: 0 auto; }
+  .muted { color: var(--muted); }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+           border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.danger { color: var(--bad); }
+  button.small { padding: 1px 7px; font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .card.offline { opacity: .65; }
+  .card h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 16px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--ok); }
+  .tag { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--chip); color: var(--muted); }
+  .tag.bad { color: var(--bad); } .tag.warn { color: var(--warn); } .tag.ok { color: var(--ok); }
+  .bat { height: 8px; border-radius: 4px; background: var(--chip); overflow: hidden; margin: 4px 0 2px; }
+  .bat > div { height: 100%; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 10px 0; }
+  dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+  code { background: var(--chip); padding: 0 5px; border-radius: 4px; cursor: copy; }
+  ul.users { list-style: none; padding: 0; margin: 6px 0 10px; }
+  ul.users li { display: flex; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
+  ul.users li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  section.events { margin-top: 22px; }
+  .events-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .events-head h2 { font-size: 16px; margin: 0; }
+  .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  #login { max-width: 360px; margin: 12vh auto; background: var(--card); border: 1px solid var(--line);
+           border-radius: 10px; padding: 20px; }
+  #login input { width: 100%; font: inherit; padding: 7px 9px; margin: 10px 0; border-radius: 6px;
+                 border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  .err { color: var(--bad); min-height: 1.4em; }
+  select { font: inherit; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+</style>
+</head>
+<body>
+
+<div id="login" hidden>
+  <h1>TurtleBots — gestão</h1>
+  <form id="loginForm">
+    <input id="keyInput" type="password" placeholder="chave de administração" autocomplete="current-password">
+    <button type="submit">Entrar</button>
+    <div class="err" id="loginErr"></div>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>TurtleBots — gestão</h1>
+    <div class="actions">
+      <span class="muted" id="updated"></span>
+      <button class="danger" id="stopAll">Parar todos</button>
+      <button id="logout">Sair</button>
+    </div>
+  </header>
+  <main>
+    <div class="grid" id="robots"></div>
+    <section class="events">
+      <div class="events-head">
+        <h2>Eventos</h2>
+        <select id="evRobot"><option value="">todos os robôs</option></select>
+        <label class="muted"><input type="checkbox" id="evNoAgent" checked> esconder ligações dos robôs</label>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>hora</th><th>robô</th><th>evento</th><th>aluno</th><th>detalhes</th></tr></thead>
+        <tbody id="events"></tbody>
+      </table></div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let key = "";
+try { key = localStorage.getItem("tbAdminKey") || ""; } catch (e) {}
+let last = null, timer = null;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const dur = (s) => s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min`;
+const hhmmss = (t) => new Date(t * 1000).toLocaleTimeString("pt-PT");
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: { "X-Admin-Key": key, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) { showLogin("Chave inválida."); throw new Error("401"); }
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+function showLogin(msg) {
+  clearInterval(timer); timer = null;
+  $("app").hidden = true; $("login").hidden = false;
+  $("loginErr").textContent = msg || "";
+  $("keyInput").focus();
+}
+
+function batteryHtml(b) {
+  if (!b || b.percentage == null) return `<span class="muted">sem dados</span>`;
+  const p = Math.round(b.percentage * 100);
+  const color = p < 20 ? "var(--bad)" : p < 40 ? "var(--warn)" : "var(--ok)";
+  const charging = b.current > 0.05 ? " · a carregar" : "";
+  const stale = b.age_s > 60 ? ` · <span class="tag warn">há ${dur(b.age_s)}</span>` : "";
+  return `<b style="color:${color}">${p} %</b> <span class="muted">${b.voltage?.toFixed(1)} V${charging}</span>${stale}
+          <div class="bat"><div style="width:${p}%;background:${color}"></div></div>`;
+}
+
+function robotCard(r, t) {
+  const b = r.battery, p = b?.percentage != null ? Math.round(b.percentage * 100) : null;
+  const tags = [];
+  if (r.locked) tags.push(`<span class="tag bad">bloqueado</span>`);
+  if (r.online && p != null && p < 20) tags.push(`<span class="tag bad">bateria baixa</span>`);
+  if (r.online && r.dock) tags.push(r.dock.is_docked ? `<span class="tag ok">na base</span>` : `<span class="tag">fora da base</span>`);
+  const users = r.users.length ? r.users.map((u) => `
+      <li><span class="name" title="${esc(u.ip)}">${u.session === r.controllerSession ? "🎮 " : ""}${esc(u.user)}</span>
+          <span class="muted">${esc(u.ip)} · ${u.idle_s < 3 ? "ativo" : "parado " + dur(u.idle_s)}</span>
+          <button class="small danger" data-act="kick" data-robot="${r.robot}" data-session="${esc(u.session)}" title="Expulsar">✕</button></li>`).join("")
+    : `<li class="muted">ninguém ligado</li>`;
+  return `
+  <div class="card ${r.online ? "" : "offline"}">
+    <h2><span class="dot ${r.online ? "on" : ""}"></span>${r.robot} ${tags.join(" ")}</h2>
+    ${r.online ? batteryHtml(b) : `<span class="muted">offline</span>`}
+    <dl>
+      <dt>chave</dt><dd>${r.key ? `<code data-copy="${esc(r.key)}" title="copiar">${esc(r.key)}</code>` : `<span class="muted">sem chave</span>`}</dd>
+      <dt>controla</dt><dd>${r.controller ? esc(r.controller) : `<span class="muted">ninguém</span>`}</dd>
+      ${r.online ? `<dt>online há</dt><dd>${dur(t - r.online_since)}</dd><dt>IP</dt><dd>${esc(r.agent_ip)}</dd>` : ""}
+      <dt>comandos</dt><dd>${r.cmds}</dd>
+    </dl>
+    <div class="muted">alunos ligados (${r.users.length})</div>
+    <ul class="users">${users}</ul>
+    <div class="actions">
+      <button class="danger" data-act="stop" data-robot="${r.robot}">Parar</button>
+      <button data-act="kick" data-robot="${r.robot}" data-session="all" ${r.users.length ? "" : "disabled"}>Expulsar todos</button>
+      <button data-act="${r.locked ? "unlock" : "lock"}" data-robot="${r.robot}">${r.locked ? "Desbloquear" : "Bloquear"}</button>
+    </div>
+  </div>`;
+}
+
+const EV_LABEL = {
+  connect: "ligou-se", disconnect: "saiu", control: "controlo", robot_online: "robô online", robot_offline: "robô offline",
+  admin_stop: "parado pelo professor", admin_lock: "bloqueado", admin_unlock: "desbloqueado",
+};
+
+function eventRow(e) {
+  const extra = [];
+  if (e.event === "control") extra.push(`${e.from_user ?? "—"} → ${e.to_user ?? "—"} (${e.reason})`);
+  if (e.event === "disconnect") extra.push(`${e.reason}, ${dur(e.duration_s || 0)}`);
+  if (e.ip && e.event !== "control") extra.push(e.ip);
+  return `<tr><td>${hhmmss(e.t)}</td><td>${esc(e.robot)}</td><td>${esc(EV_LABEL[e.event] || e.event)}</td>
+          <td>${esc(e.user || "")}</td><td class="muted">${esc(extra.join(" · "))}</td></tr>`;
+}
+
+function render() {
+  if (!last) return;
+  const t = last.now;
+  for (const r of last.robots) {
+    const c = r.users.find((u) => u.user === r.controller);
+    r.controllerSession = c ? c.session : null;
+  }
+  $("robots").innerHTML = last.robots.map((r) => robotCard(r, t)).join("");
+  const sel = $("evRobot");
+  if (sel.options.length === 1) for (const r of last.robots) sel.add(new Option(r.robot, r.robot));
+  const hideAgent = $("evNoAgent").checked;
+  const ev = last.events.filter((e) => (!sel.value || e.robot === sel.value)
+                                     && !(hideAgent && (e.event === "robot_online" || e.event === "robot_offline")));
+  $("events").innerHTML = ev.reverse().slice(0, 150).map(eventRow).join("") || `<tr><td colspan="5" class="muted">sem eventos</td></tr>`;
+  $("updated").textContent = "atualizado " + hhmmss(t);
+}
+
+async function refresh() {
+  try {
+    last = await api("/api/admin/status?events=400");
+    render();
+  } catch (e) {
+    if (e.message !== "401") $("updated").textContent = "sem ligação ao relay";
+  }
+}
+
+function start() {
+  $("login").hidden = true; $("app").hidden = false;
+  refresh();
+  clearInterval(timer);
+  timer = setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+}
+
+$("loginForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  key = $("keyInput").value.trim();
+  try {
+    last = await api("/api/admin/status?events=400");
+    try { localStorage.setItem("tbAdminKey", key); } catch (e) {}
+    start();
+  } catch (e) { if (e.message !== "401") $("loginErr").textContent = "Erro: " + e.message; }
+});
+
+$("logout").addEventListener("click", () => {
+  try { localStorage.removeItem("tbAdminKey"); } catch (e) {}
+  key = ""; showLogin();
+});
+
+$("stopAll").addEventListener("click", async () => {
+  if (!last) return;
+  await Promise.all(last.robots.filter((r) => r.online).map((r) => api(`/api/admin/${r.robot}/stop`, {})));
+  refresh();
+});
+
+document.addEventListener("click", async (ev) => {
+  const copy = ev.target.closest("[data-copy]");
+  if (copy) { navigator.clipboard?.writeText(copy.dataset.copy); return; }
+  const btn = ev.target.closest("button[data-act]");
+  if (!btn) return;
+  const { act, robot, session } = btn.dataset;
+  if (act === "lock" && !confirm(`Bloquear o ${robot}? Os alunos ligados são expulsos e ninguém se consegue ligar até desbloqueares.`)) return;
+  btn.disabled = true;
+  try { await api(`/api/admin/${robot}/${act}`, session ? { session } : {}); } catch (e) { alert(e.message); }
+  refresh();
+});
+
+$("evRobot").addEventListener("change", render);
+$("evNoAgent").addEventListener("change", render);
+
+if (key) start(); else showLogin();
+</script>
+</body>
+</html>

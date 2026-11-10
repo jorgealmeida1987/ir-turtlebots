@@ -43,6 +43,11 @@ AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 STUDENT_KEY = os.environ.get("STUDENT_KEY", "")            # vazio = sem chave de turma
 # chave por robô (uma por grupo): ROBOT_KEYS=robot1:abcd,robot2:efgh — tem prioridade sobre STUDENT_KEY
 ROBOT_KEYS = dict(kv.split(":", 1) for kv in os.environ.get("ROBOT_KEYS", "").replace(" ", "").split(",") if ":" in kv)
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "")                # página de gestão /api/admin/ (vazio = desligada)
+# tópicos pedidos sempre a cada robô online (para a página de gestão), mesmo sem alunos
+MONITOR_TOPICS = frozenset(t.strip() for t in os.environ.get("MONITOR_TOPICS", "battery_state,dock_status").split(",")
+                           if t.strip())
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 SESSION_TIMEOUT = float(os.environ.get("SESSION_TIMEOUT_S", "30"))
 TOPIC_IDLE = float(os.environ.get("TOPIC_IDLE_S", "5"))      # tópico deixa de ser pedido ao robô após X s sem pedidos
 LONGPOLL_MAX = float(os.environ.get("LONGPOLL_MAX_S", "2"))
@@ -72,6 +77,23 @@ class EventLog:
         except OSError as e:
             log.error("não consegui escrever no log de eventos: %s", e)
 
+    def tail(self, n: int) -> list[dict]:
+        """Últimos n eventos (lê só o fim do ficheiro)."""
+        try:
+            with open(self.path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 400 * n))
+                lines = f.read().decode("utf-8", errors="replace").splitlines()[-n:]
+        except OSError:
+            return []
+        out = []
+        for line in lines:
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                pass
+        return out
+
 
 EVENTS = EventLog(EVENT_LOG)
 
@@ -85,9 +107,11 @@ class Session:
         self.connected_at = now()
         self.last_seen = now()
 
-    def public(self) -> dict:
-        return {"user": self.user, "ip": self.ip, "connected_at": round(self.connected_at),
-                "idle_s": round(now() - self.last_seen, 1)}
+    def public(self, admin: bool = False) -> dict:
+        d = {"user": self.user, "connected_at": round(self.connected_at), "idle_s": round(now() - self.last_seen, 1)}
+        if admin:                                  # IP e id da sessão só na página de gestão
+            d.update(ip=self.ip, session=self.id)
+        return d
 
 
 class Robot:
@@ -104,6 +128,8 @@ class Robot:
         self.sessions: dict[str, Session] = {}
         self.controller: str | None = None                   # session id
         self.cmds = 0
+        self.locked = False                                  # bloqueado na página de gestão (não aceita alunos)
+        self.received: dict[str, float] = {}                 # tópico -> hora da última mensagem
 
     # ---------------------------------------------------------------- robô -> relay
     async def on_data(self, raw: str) -> None:
@@ -119,6 +145,7 @@ class Robot:
         # injeta "seq" no início do objeto, uma única vez por mensagem
         body = ('{"seq":%d,' % self.seq + raw[1:]).encode()
         self.latest[topic] = (self.seq, body)
+        self.received[topic] = now()
         async with self.cond:
             self.cond.notify_all()
 
@@ -131,7 +158,7 @@ class Robot:
 
     async def update_subs(self) -> None:
         cutoff = now() - TOPIC_IDLE
-        topics = frozenset(t for t, ts in self.wanted.items() if ts >= cutoff)
+        topics = frozenset(t for t, ts in self.wanted.items() if ts >= cutoff) | MONITOR_TOPICS
         if topics != self.sent_subs and self.ws is not None:
             await self.send({"type": "subs", "topics": sorted(topics)})
             self.sent_subs = topics
@@ -162,17 +189,42 @@ class Robot:
             await self.set_controller(None, f"controller {reason}")   # antes do pop, para registar from_user
         self.sessions.pop(sid, None)
 
-    def status(self) -> dict:
+    def status(self, admin: bool = False) -> dict:
         c = self.controller_session()
-        return {
+        d = {
             "robot": self.name,
             "online": self.ws is not None,
             "online_since": round(self.online_since) if self.ws is not None else None,
+            "locked": self.locked,
             "controller": c.user if c else None,
-            "users": [s.public() for s in self.sessions.values()],
+            "users": [s.public(admin) for s in self.sessions.values()],
             "topics_available": sorted(self.latest),
             "topics_streaming": sorted(self.sent_subs or ()),
         }
+        if admin:
+            d.update(agent_ip=self.agent_ip, cmds=self.cmds, key=ROBOT_KEYS.get(self.name, STUDENT_KEY),
+                     battery=self._msg("battery_state", "percentage", "voltage", "current", "power_supply_status"),
+                     dock=self._msg("dock_status", "is_docked", "dock_visible"))
+        return d
+
+    def _msg(self, topic: str, *fields) -> dict | None:
+        """Campos escolhidos da última mensagem de um tópico, mais a idade em segundos."""
+        item = self.latest.get(topic)
+        if item is None:
+            return None
+        try:
+            m = json.loads(item[1])
+        except ValueError:
+            return None
+        return {**{f: m.get(f) for f in fields}, "age_s": round(now() - self.received.get(topic, 0), 1)}
+
+    async def lock(self, locked: bool) -> None:
+        self.locked = locked
+        EVENTS.write("admin_lock" if locked else "admin_unlock", robot=self.name)
+        if locked:
+            for sid in list(self.sessions):
+                await self.drop_session(sid, "locked")
+            await self.send(STOP)
 
 
 ROBOTS_BY_NAME = {n: Robot(n) for n in ROBOTS}
@@ -273,6 +325,8 @@ async def connect(req: web.Request) -> web.Response:
     key = ROBOT_KEYS.get(r.name, STUDENT_KEY)
     if key and str(data.get("key", "")).strip().lower() != key.lower():
         return err(403, f"chave inválida para o {r.name}")
+    if r.locked:
+        return err(423, f"o {r.name} está bloqueado pelo professor")
     s = Session(r.name, user, client_ip(req))
     r.sessions[s.id] = s
     EVENTS.write("connect", robot=r.name, user=user, ip=s.ip)
@@ -350,6 +404,55 @@ async def healthz(_req: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
+# --------------------------------------------------------------------------- rotas: gestão (professor)
+def require_admin(req: web.Request) -> None:
+    key = req.headers.get("X-Admin-Key", "")
+    if not ADMIN_KEY or not secrets.compare_digest(key.encode(), ADMIN_KEY.encode()):
+        raise web.HTTPUnauthorized(text=json.dumps({"error": "chave de administração inválida"}),
+                                   content_type="application/json")
+
+
+async def admin_redirect(_req: web.Request) -> web.Response:
+    raise web.HTTPFound("/api/admin/")
+
+
+async def admin_page(_req: web.Request) -> web.Response:
+    return web.FileResponse(os.path.join(STATIC_DIR, "admin.html"),
+                            headers={"Cache-Control": "no-cache", "X-Robots-Tag": "noindex"})
+
+
+async def admin_status(req: web.Request) -> web.Response:
+    require_admin(req)
+    try:
+        n = min(int(req.query.get("events", "100")), 1000)
+    except ValueError:
+        n = 100
+    return web.json_response({"now": round(now(), 1),
+                              "robots": [r.status(admin=True) for r in ROBOTS_BY_NAME.values()],
+                              "events": EVENTS.tail(n)})
+
+
+async def admin_action(req: web.Request) -> web.Response:
+    require_admin(req)
+    r = get_robot(req)
+    action = req.match_info["action"]
+    data = await body_json(req)
+    if action == "stop":
+        await r.send(STOP)
+        EVENTS.write("admin_stop", robot=r.name)
+    elif action == "kick":
+        sid = str(data.get("session", ""))
+        targets = list(r.sessions) if sid in ("", "all") else [sid]
+        for s in targets:
+            await r.drop_session(s, "kicked")
+        await r.send(STOP)
+    elif action in ("lock", "unlock"):
+        await r.lock(action == "lock")
+    else:
+        return err(404, f"ação desconhecida: {action}")
+    return web.json_response({"ok": True, "robot": r.status(admin=True)})
+
+
 # --------------------------------------------------------------------------- manutenção
 async def housekeeping(_app: web.Application):
     async def loop():
@@ -374,6 +477,12 @@ def make_app() -> web.Application:
         web.get("/healthz", healthz),
         web.get("/agent", agent_ws),
         web.get("/api/status", all_status),
+        # gestão: antes das rotas /api/{robot}/..., senão "admin" era tratado como nome de robô
+        web.get("/api/admin", admin_redirect),
+        web.get("/api/admin/", admin_page),
+        web.get("/", admin_page),
+        web.get("/api/admin/status", admin_status),
+        web.post("/api/admin/{robot}/{action}", admin_action),
         web.get("/api/{robot}/status", robot_status),
         web.post("/api/{robot}/connect", connect),
         web.post("/api/{robot}/disconnect", disconnect),

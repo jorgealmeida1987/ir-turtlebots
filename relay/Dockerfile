@@ -6,6 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY relay.py tunnel.py ./
+COPY static/ static/
 
 RUN useradd --system --uid 10001 relay && mkdir -p /data && chown relay /data
 USER relay
