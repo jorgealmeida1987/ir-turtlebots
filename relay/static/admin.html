@@ -10,10 +10,16 @@
     --bg: #f5f6f8; --card: #fff; --fg: #1d2330; --muted: #6b7280; --line: #e3e6eb;
     --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --accent: #2563eb; --chip: #eef1f5;
   }
+  /* tema: segue o sistema, a não ser que se escolha no botão do cabeçalho (data-theme no <html>) */
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #11151c; --card: #1a2029; --fg: #e6e9ee; --muted: #9aa3b2; --line: #2a313c;
+    :root:not([data-theme="light"]) { --bg: #11151c; --card: #1a2029; --fg: #e6e9ee; --muted: #9aa3b2; --line: #2a313c;
             --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #60a5fa; --chip: #232a35; }
   }
+  :root[data-theme="dark"] { --bg: #11151c; --card: #1a2029; --fg: #e6e9ee; --muted: #9aa3b2; --line: #2a313c;
+          --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #60a5fa; --chip: #232a35; }
+  :root { color-scheme: light dark; }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
          font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -85,6 +91,7 @@
     <div class="actions">
       <span id="updated">a ligar…</span>
       <button class="danger" id="stopAll">Parar todos</button>
+      <button id="theme" title="Mudar tema"></button>
       <button id="logout">Sair</button>
     </div>
   </header>
@@ -106,6 +113,23 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// Tema claro/escuro: guardado no browser; sem escolha, segue o sistema.
+const darkMq = window.matchMedia("(prefers-color-scheme: dark)");
+function currentTheme() {
+  return document.documentElement.dataset.theme || (darkMq.matches ? "dark" : "light");
+}
+function applyTheme(theme) {
+  if (theme) document.documentElement.dataset.theme = theme;
+  $("theme").textContent = currentTheme() === "dark" ? "☀ Claro" : "☾ Escuro";
+}
+try { applyTheme(localStorage.getItem("tbTheme")); } catch (e) { applyTheme(null); }
+darkMq.addEventListener?.("change", () => applyTheme(null));
+$("theme").addEventListener("click", () => {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try { localStorage.setItem("tbTheme", next); } catch (e) {}
+});
 let key = "";
 try { key = localStorage.getItem("tbAdminKey") || ""; } catch (e) {}
 let last = null, timer = null;
