@@ -203,6 +203,7 @@ class Robot:
         }
         if admin:
             d.update(agent_ip=self.agent_ip, cmds=self.cmds, key=ROBOT_KEYS.get(self.name, STUDENT_KEY),
+                     last_data_at=round(max(self.received.values()), 1) if self.received else None,
                      battery=self._msg("battery_state", "percentage", "voltage", "current", "power_supply_status"),
                      dock=self._msg("dock_status", "is_docked", "dock_visible"))
         return d

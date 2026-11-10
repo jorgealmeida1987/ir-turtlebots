@@ -43,7 +43,7 @@
   ul.users { list-style: none; padding: 0; margin: 6px 0 10px; }
   ul.users li { display: flex; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
   ul.users li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   section.events { margin-top: 22px; }
   .events-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .events-head h2 { font-size: 16px; margin: 0; }
@@ -56,6 +56,15 @@
   #login input { width: 100%; font: inherit; padding: 7px 9px; margin: 10px 0; border-radius: 6px;
                  border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
   .err { color: var(--bad); min-height: 1.4em; }
+  .link { margin: -4px 0 10px; font-size: 12px; }
+  .link-state { font-weight: 600; }
+  .link .ok { color: var(--ok); } .link .bad { color: var(--bad); }
+  #updated { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; padding: 3px 10px;
+             border-radius: 99px; background: var(--chip); color: var(--ok); }
+  #updated::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  #updated.stale { color: var(--bad); }
+  #updated.pulse::before { animation: pulse .6s ease-out; }
+  @keyframes pulse { from { transform: scale(1.8); } to { transform: scale(1); } }
   select { font: inherit; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
 </style>
 </head>
@@ -74,7 +83,7 @@
   <header>
     <h1>TurtleBots — gestão</h1>
     <div class="actions">
-      <span class="muted" id="updated"></span>
+      <span id="updated">a ligar…</span>
       <button class="danger" id="stopAll">Parar todos</button>
       <button id="logout">Sair</button>
     </div>
@@ -133,6 +142,39 @@ function batteryHtml(b) {
           <div class="bat"><div style="width:${p}%;background:${color}"></div></div>`;
 }
 
+// Diferença entre o relógio do servidor e o deste PC, para o «há X s» avançar sozinho entre pedidos.
+let clockOffset = 0;
+const STALE_S = 10;
+
+function formatWhen(ms) {
+  if (ms == null) return "—";
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  const rel = s < 60 ? `há ${s} s` : s < 3600 ? `há ${Math.floor(s / 60)} min` : s < 86400 ? `há ${Math.floor(s / 3600)} h` : `há ${Math.floor(s / 86400)} d`;
+  const d = new Date(ms), today = d.toDateString() === new Date().toDateString();
+  return `${rel} · ${today ? d.toLocaleTimeString("pt-PT") : d.toLocaleString("pt-PT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`;
+}
+
+// Linha de estado da telemetria do robô (como o cartão «Ligação» do shield).
+function linkHtml(r) {
+  const at = r.last_data_at != null ? r.last_data_at * 1000 + clockOffset : null;
+  const age = at != null ? (Date.now() - at) / 1000 : Infinity;
+  let cls, label;
+  if (!r.online) { cls = "muted"; label = "Offline"; }
+  else if (age > STALE_S) { cls = "bad"; label = "⚠ Sem dados recentes"; }
+  else { cls = "ok"; label = "● A receber dados"; }
+  return `<div class="link-state ${cls}">${label}</div>
+          <div class="link-when ${r.online && age > STALE_S ? "bad" : "muted"}">${at == null ? "nunca recebeu dados" : "último dado " + formatWhen(at)}</div>`;
+}
+
+function tickLinks() {
+  if (!last) return;
+  for (const r of last.robots) {
+    const el = document.querySelector(`[data-link="${r.robot}"]`);
+    if (el) el.innerHTML = linkHtml(r);
+  }
+}
+setInterval(tickLinks, 1000);
+
 function robotCard(r, t) {
   const b = r.battery, p = b?.percentage != null ? Math.round(b.percentage * 100) : null;
   const tags = [];
@@ -147,6 +189,7 @@ function robotCard(r, t) {
   return `
   <div class="card ${r.online ? "" : "offline"}">
     <h2><span class="dot ${r.online ? "on" : ""}"></span>${r.robot} ${tags.join(" ")}</h2>
+    <div class="link" data-link="${r.robot}">${linkHtml(r)}</div>
     ${r.online ? batteryHtml(b) : `<span class="muted">offline</span>`}
     <dl>
       <dt>chave</dt><dd>${r.key ? `<code data-copy="${esc(r.key)}" title="copiar">${esc(r.key)}</code>` : `<span class="muted">sem chave</span>`}</dd>
@@ -192,16 +235,30 @@ function render() {
   const ev = last.events.filter((e) => (!sel.value || e.robot === sel.value)
                                      && !(hideAgent && (e.event === "robot_online" || e.event === "robot_offline")));
   $("events").innerHTML = ev.reverse().slice(0, 150).map(eventRow).join("") || `<tr><td colspan="5" class="muted">sem eventos</td></tr>`;
-  $("updated").textContent = "atualizado " + hhmmss(t);
 }
+
+let lastOk = 0;
+function showUpdated() {
+  const el = $("updated");
+  if (!lastOk) return;
+  const age = (Date.now() - lastOk) / 1000;
+  el.classList.toggle("stale", age > 6);
+  el.textContent = age > 6 ? `sem atualizações há ${dur(age)}` : `ao vivo · ${new Date(lastOk).toLocaleTimeString("pt-PT")}`;
+}
+setInterval(showUpdated, 1000);
 
 async function refresh() {
   try {
     last = await api("/api/admin/status?events=400");
+    clockOffset = Date.now() - last.now * 1000;
     render();
+    lastOk = Date.now();
+    const el = $("updated");
+    el.classList.remove("pulse"); void el.offsetWidth; el.classList.add("pulse");
   } catch (e) {
-    if (e.message !== "401") $("updated").textContent = "sem ligação ao relay";
+    if (e.message !== "401" && !lastOk) $("updated").textContent = "sem ligação ao relay";
   }
+  showUpdated();
 }
 
 function start() {
